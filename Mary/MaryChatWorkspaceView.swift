@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-// Local-only enum name to avoid collisions with existing project types
 enum MaryWorkspacePaneMode: String, CaseIterable, Identifiable {
     case chat = "Chat"
     case terminal = "Terminal"
@@ -11,33 +10,16 @@ enum MaryWorkspacePaneMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-// Local-only enum name to avoid collisions
-enum MaryWorkspaceTaskMode: String, CaseIterable, Identifiable {
-    case auto = "Auto"
-    case chat = "Chat"
-    case code = "Code"
-    case debug = "Debug"
-    case research = "Research"
-
-    var id: String { rawValue }
-}
-
 struct MaryChatWorkspaceView: View {
     @EnvironmentObject var brain: MaryReasoningEngine
     @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var control: MaryControlCenter
 
     @State private var userInput: String = ""
     @State private var isProcessing: Bool = false
-
     @State private var paneMode: MaryWorkspacePaneMode = .chat
-    @State private var taskMode: MaryWorkspaceTaskMode = .auto
     @State private var showThinkingPanel: Bool = true
-
     @State private var attachedFiles: [URL] = []
-
-    // Keep local depth enum out to avoid redeclaration; use plain string state
-    @State private var depthSelection: String = "Normal"
-    private let depthOptions = ["Basic", "Normal", "Deep"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,7 +35,6 @@ struct MaryChatWorkspaceView: View {
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil, perform: handleDrop)
     }
 
-    // MARK: - Top Bar
     private var topBar: some View {
         HStack(spacing: 12) {
             Picker("View", selection: $paneMode) {
@@ -64,17 +45,17 @@ struct MaryChatWorkspaceView: View {
             .pickerStyle(.segmented)
             .frame(width: 220)
 
-            Picker("Task", selection: $taskMode) {
-                ForEach(MaryWorkspaceTaskMode.allCases) { mode in
+            Picker("Task", selection: $control.selectedTask) {
+                ForEach(MaryControlCenter.TaskKind.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
             .frame(width: 360)
 
-            Picker("Depth", selection: $depthSelection) {
-                ForEach(depthOptions, id: \.self) { value in
-                    Text(value).tag(value)
+            Picker("Depth", selection: $control.selectedDepth) {
+                ForEach(MaryControlCenter.Depth.allCases) { depth in
+                    Text(depth.rawValue).tag(depth)
                 }
             }
             .pickerStyle(.segmented)
@@ -93,7 +74,6 @@ struct MaryChatWorkspaceView: View {
         .padding(.vertical, 8)
     }
 
-    // MARK: - Content
     @ViewBuilder
     private var contentArea: some View {
         switch paneMode {
@@ -143,16 +123,22 @@ struct MaryChatWorkspaceView: View {
 
     private var terminalPane: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("TERMINAL / TOOL LOG", systemImage: "terminal")
+            Label("TERMINAL / ACTION LOG", systemImage: "terminal")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(.secondary)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("This pane is ready for live terminal stream integration.")
-                    Text("Use it for commands, outputs, and permission actions.")
+                    ForEach(control.actionLog.prefix(100)) { entry in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("[\(entry.timestamp.formatted(date: .omitted, time: .standard))] \(entry.title)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            Text(entry.detail)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
-                .font(.system(.body, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
             }
@@ -169,11 +155,11 @@ struct MaryChatWorkspaceView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.secondary)
 
-            Text("Task: \(taskMode.rawValue) • Depth: \(depthSelection)")
+            Text("Task: \(control.selectedTask.rawValue) • Depth: \(control.selectedDepth.rawValue)")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
 
-            Text("Flow: Interpret → plan → request permission (if needed) → act.")
+            Text("Plan: classify input → ask permission if needed → execute via tools.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
         }
@@ -182,7 +168,6 @@ struct MaryChatWorkspaceView: View {
         .background(Color(NSColor.controlBackgroundColor).opacity(0.45))
     }
 
-    // MARK: - Attachments
     private var attachmentsRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -217,7 +202,6 @@ struct MaryChatWorkspaceView: View {
         }
     }
 
-    // MARK: - Composer
     private var composerArea: some View {
         VStack(spacing: 8) {
             TextEditor(text: $userInput)
@@ -236,9 +220,17 @@ struct MaryChatWorkspaceView: View {
                     Label("Attach", systemImage: "paperclip")
                 }
 
-                Text("⌘↩ Send")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Button("Clear Chat") {
+                    control.clearChatHistory()
+                    brain.thoughts = "> Chat history cleared."
+                }
+                .buttonStyle(.link)
+
+                Button("Reset Memory") {
+                    control.resetAllMemory()
+                    brain.thoughts = "> Memory reset complete."
+                }
+                .buttonStyle(.link)
 
                 Spacer()
 
@@ -256,7 +248,6 @@ struct MaryChatWorkspaceView: View {
         .padding(.bottom, 8)
     }
 
-    // MARK: - Actions
     private func openFilePicker() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -266,6 +257,7 @@ struct MaryChatWorkspaceView: View {
         if panel.runModal() == .OK {
             attachedFiles.append(contentsOf: panel.urls)
             brain.thoughts += "\n> Attached \(panel.urls.count) item(s)."
+            control.log("Attachment", "Attached \(panel.urls.count) item(s)")
         }
     }
 
@@ -278,6 +270,7 @@ struct MaryChatWorkspaceView: View {
                 DispatchQueue.main.async {
                     attachedFiles.append(url)
                     brain.thoughts += "\n> Dropped file: \(url.lastPathComponent)"
+                    control.log("Attachment", "Dropped file: \(url.lastPathComponent)")
                 }
             }
         }
@@ -292,29 +285,31 @@ struct MaryChatWorkspaceView: View {
         Task { @MainActor in
             isProcessing = true
 
-            // Keep authority in brain
+            let classified = control.classifyTask(for: trimmed)
+            control.addUserMessage(trimmed)
+            control.log("Task Classified", classified.rawValue)
+
             brain.currentMode = brain.analyzeComplexity(for: trimmed)
             brain.thoughts += "\n> Joe: \(trimmed)"
 
             if !attachedFiles.isEmpty {
-                brain.thoughts += "\n> Attachments: \(attachedFiles.map { $0.lastPathComponent }.joined(separator: ", "))"
+                let names = attachedFiles.map(\.lastPathComponent).joined(separator: ", ")
+                brain.thoughts += "\n> Attachments: \(names)"
             }
 
-            // Keep networking layer intact elsewhere
             userInput = ""
             isProcessing = false
         }
     }
 
-    // MARK: - Footer
     private var statusFooter: some View {
         HStack {
             Group {
                 Text("MODE: \(brain.currentMode.rawValue.uppercased())")
                 Separator()
-                Text("TASK: \(taskMode.rawValue.uppercased())")
+                Text("TASK: \(control.selectedTask.rawValue.uppercased())")
                 Separator()
-                Text("DEPTH: \(depthSelection.uppercased())")
+                Text("DEPTH: \(control.selectedDepth.rawValue.uppercased())")
                 Separator()
                 Text("BACKEND: 8082")
             }
@@ -327,6 +322,7 @@ struct MaryChatWorkspaceView: View {
                 brain.thoughts = "> Rebooting context..."
                 brain.reset()
                 attachedFiles.removeAll()
+                control.log("Environment", "Reset requested")
             }
             .buttonStyle(.link)
             .font(.caption2)

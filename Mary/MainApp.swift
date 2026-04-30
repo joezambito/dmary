@@ -18,6 +18,8 @@ import SwiftUI
 struct MaryApp: App {
     @StateObject private var brain = MaryReasoningEngine()
     @StateObject private var settings = SettingsManager.shared
+    @StateObject private var control = MaryControlCenter()
+
     private static var didLogLaunch = false
 
     init() {
@@ -32,6 +34,7 @@ struct MaryApp: App {
             MaryMainView()
                 .environmentObject(brain)
                 .environmentObject(settings)
+                .environmentObject(control)
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified)
