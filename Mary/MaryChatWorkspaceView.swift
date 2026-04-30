@@ -4,30 +4,22 @@ import AppKit
 struct MaryChatWorkspaceView: View {
     @EnvironmentObject var brain: MaryReasoningEngine
     @EnvironmentObject var settings: SettingsManager
-    
+
     @State private var userInput: String = ""
     @State private var isProcessing: Bool = false
-    
-    let messages: [MaryChatMessage]
-    let isThinking: Bool
-    let thinkingText: String
-    @Binding var draftText: String
-    @Binding var attachedFiles: [URL]
-    let onSend: () -> Void
-    
+
     var body: some View {
         VStack(spacing: 0) {
-            // 1. THE REASONING STREAM
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("MARY'S SYSTEM LOGS", systemImage: "terminal")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.secondary)
-                        
+
                         Text(brain.thoughts)
                             .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled) // Allows Joe to copy error logs
+                            .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id("BottomLog")
                     }
@@ -35,15 +27,13 @@ struct MaryChatWorkspaceView: View {
                 }
                 .background(Color(NSColor.textBackgroundColor).opacity(0.5))
                 .onChange(of: brain.thoughts) { _ in
-                    // Auto-scroll to keep the latest thoughts visible
                     withAnimation { proxy.scrollTo("BottomLog", anchor: .bottom) }
                 }
             }
             .frame(minHeight: 200)
-            
+
             Divider()
-            
-            // 2. THE MAIN INTERACTION AREA
+
             HStack(spacing: 12) {
                 Button(action: openFilePicker) {
                     Image(systemName: "plus.viewfinder")
@@ -56,7 +46,7 @@ struct MaryChatWorkspaceView: View {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(sendMessage)
                     .disabled(isProcessing)
-                
+
                 if isProcessing {
                     ProgressView().controlSize(.small)
                 } else {
@@ -69,12 +59,11 @@ struct MaryChatWorkspaceView: View {
                 }
             }
             .padding()
-            
-            // 3. HARDWARE & CONTEXT BAR
+
             statusFooter
         }
     }
-    
+
     private func openFilePicker() {
         brain.thoughts += "\n> File picker requested."
     }
@@ -82,14 +71,17 @@ struct MaryChatWorkspaceView: View {
     private func sendMessage() {
         let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard !isProcessing else { return }
 
-        isProcessing = true
-        brain.currentMode = brain.analyzeComplexity(for: trimmed)
-        brain.thoughts += "\n> Joe: \(trimmed)"
-        userInput = ""
-        isProcessing = false
+        Task { @MainActor in
+            isProcessing = true
+            brain.currentMode = brain.analyzeComplexity(for: trimmed)
+            brain.thoughts += "\n> Joe: \(trimmed)"
+            userInput = ""
+            isProcessing = false
+        }
     }
-    
+
     private var statusFooter: some View {
         HStack {
             Group {
@@ -101,9 +93,9 @@ struct MaryChatWorkspaceView: View {
             }
             .font(.system(size: 9, weight: .semibold, design: .monospaced))
             .foregroundColor(.secondary)
-            
+
             Spacer()
-            
+
             Button("Reset Environment") {
                 brain.thoughts = "> Rebooting context..."
                 brain.reset()
@@ -115,7 +107,6 @@ struct MaryChatWorkspaceView: View {
     }
 }
 
-// Minimalist separator for the footer
 struct Separator: View {
     var body: some View {
         Text("|").foregroundColor(.gray).opacity(0.5)

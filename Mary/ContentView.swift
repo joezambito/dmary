@@ -47,20 +47,14 @@ struct ContentView: View {
         Group {
             switch selectedSection {
             case .chat:
-                MaryChatWorkspaceView(
-                    messages: viewModel.messages,
-                    isThinking: viewModel.isThinking,
-                    thinkingText: viewModel.thinkingText,
-                    draftText: $viewModel.input,
-                    attachedFiles: $viewModel.attachedFiles,
-                    onSend: { viewModel.send() }
-                )
+                MaryChatWorkspaceView()
             case .library:
                 MaryLibraryView(attachedFiles: viewModel.attachedFiles)
+            @unknown default:
+                MaryChatWorkspaceView()
             }
         }
     }
-
     private var settingsOverlay: some View {
         MarySettingsPanel(
             onClose: {

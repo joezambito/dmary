@@ -28,7 +28,6 @@ actor MaryBackendManager {
     }
 
     private func isServerReachable() async -> Bool {
-        // FIXED: Corrected URL and Port
         guard let url = URL(string: "http://127.0.0.1:8082/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
@@ -60,17 +59,21 @@ struct MaryLocalLLMService {
         let backendReady = await MaryBackendManager.shared.ensureRunning()
         guard backendReady else { return "BACKEND_ERROR: Server Not Reachable" }
 
-        // FIXED: Corrected endpoint
-        guard let url = URL(string: "http://127.0.0.1:8082/completion") else {
+        // FIXED: OpenAI-compatible llama.cpp endpoint
+        guard let url = URL(string: "http://127.0.0.1:8082/v1/chat/completions") else {
             return "BACKEND_ERROR: Invalid URL."
         }
 
         let body: [String: Any] = [
-            "prompt": prompt,
-            "n_predict": maxTokens,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": prompt
+                ]
+            ],
+            "max_tokens": maxTokens,
             "temperature": temp,
-            "cache_prompt": true,
-            "stop": ["<|im_end|>", "Joe:", "Mary:"] // Base hardware stops only
+            "stop": ["<|im_end|>", "```", "Joe:", "Mary:"]
         ]
 
         var request = URLRequest(url: url)
@@ -79,15 +82,22 @@ struct MaryLocalLLMService {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 200 
+        config.timeoutIntervalForRequest = 200
         let session = URLSession(configuration: config)
 
         do {
             let (data, _) = try await session.data(for: request)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let content = json["content"] as? String {
+
+            if
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let choices = json["choices"] as? [[String: Any]],
+                let first = choices.first,
+                let message = first["message"] as? [String: Any],
+                let content = message["content"] as? String
+            {
                 return content.trimmingCharacters(in: .whitespacesAndNewlines)
             }
+
             return "BACKEND_ERROR: Invalid Response"
         } catch {
             return "BACKEND_ERROR: \(error.localizedDescription)"
