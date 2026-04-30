@@ -21,20 +21,136 @@ struct MaryChatWorkspaceView: View {
     @State private var showThinkingPanel: Bool = true
     @State private var attachedFiles: [URL] = []
 
+    @State private var showingDeleteThreadConfirm = false
+    @State private var threadToDelete: UUID?
+    @State private var showingClearAllConfirm = false
+
     var body: some View {
-        VStack(spacing: 0) {
-            topBar
+        HStack(spacing: 0) {
+            threadSidebar
+                .frame(width: 260)
+                .background(MaryTheme.panelBackground)
+
             Divider()
-            contentArea
-            Divider()
-            attachmentsRow
-            composerArea
-            statusFooter
+
+            VStack(spacing: 0) {
+                topBar
+                Divider()
+                contentArea
+                Divider()
+                attachmentsRow
+                composerArea
+                statusFooter
+            }
+            .background(MaryTheme.appBackground)
+            .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil, perform: handleDrop)
         }
-        .background(MaryTheme.appBackground)
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil, perform: handleDrop)
+        .confirmationDialog("Delete this chat thread?", isPresented: $showingDeleteThreadConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let id = threadToDelete {
+                    control.deleteThread(id)
+                    brain.thoughts += "\n> Deleted thread."
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Clear ALL chat threads?", isPresented: $showingClearAllConfirm, titleVisibility: .visible) {
+            Button("Clear All", role: .destructive) {
+                control.clearAllThreads()
+                brain.thoughts += "\n> Cleared all chat threads."
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
+    // MARK: - Left Sidebar (Threads)
+    private var threadSidebar: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("Chats")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    control.createNewThread()
+                    brain.thoughts += "\n> New chat created."
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(control.chatThreads) { thread in
+                        threadRow(thread: thread)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 10)
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Button("Clear All") {
+                    showingClearAllConfirm = true
+                }
+                .buttonStyle(.link)
+
+                Spacer()
+
+                Button("Reset Memory") {
+                    control.resetAllMemory()
+                    brain.thoughts = "> Memory reset complete."
+                }
+                .buttonStyle(.link)
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+        }
+    }
+
+    private func threadRow(thread: MaryControlCenter.ChatThread) -> some View {
+        let isActive = thread.id == control.activeThreadID
+
+        return HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(thread.title)
+                    .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                    .lineLimit(1)
+
+                Text("\(thread.messages.count) msg • \(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button {
+                threadToDelete = thread.id
+                showingDeleteThreadConfirm = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+        }
+        .padding(8)
+        .background(isActive ? Color.accentColor.opacity(0.16) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            control.selectThread(thread.id)
+            loadActiveThreadIntoReasoningStream()
+        }
+    }
+
+    // MARK: - Top Bar
     private var topBar: some View {
         HStack(spacing: 12) {
             Picker("View", selection: $paneMode) {
@@ -74,6 +190,7 @@ struct MaryChatWorkspaceView: View {
         .padding(.vertical, 8)
     }
 
+    // MARK: - Main Content Area
     @ViewBuilder
     private var contentArea: some View {
         switch paneMode {
@@ -90,6 +207,7 @@ struct MaryChatWorkspaceView: View {
         }
     }
 
+    // MARK: - Chat Pane
     private var chatPane: some View {
         VStack(spacing: 0) {
             if showThinkingPanel {
@@ -121,6 +239,7 @@ struct MaryChatWorkspaceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // MARK: - Terminal Pane
     private var terminalPane: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("TERMINAL / ACTION LOG", systemImage: "terminal")
@@ -129,7 +248,7 @@ struct MaryChatWorkspaceView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(control.actionLog.prefix(100)) { entry in
+                    ForEach(control.actionLog.prefix(150)) { entry in
                         VStack(alignment: .leading, spacing: 2) {
                             Text("[\(entry.timestamp.formatted(date: .omitted, time: .standard))] \(entry.title)")
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -137,6 +256,12 @@ struct MaryChatWorkspaceView: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
+                    }
+
+                    if control.actionLog.isEmpty {
+                        Text("No actions yet.")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -149,6 +274,7 @@ struct MaryChatWorkspaceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // MARK: - Thinking Panel
     private var thinkingPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Mary Thinking")
@@ -159,7 +285,7 @@ struct MaryChatWorkspaceView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
 
-            Text("Plan: classify input → ask permission if needed → execute via tools.")
+            Text("Plan: classify input → decide tool path → ask permission where required.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
         }
@@ -168,6 +294,7 @@ struct MaryChatWorkspaceView: View {
         .background(Color(NSColor.controlBackgroundColor).opacity(0.45))
     }
 
+    // MARK: - Attachments Row
     private var attachmentsRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -191,6 +318,7 @@ struct MaryChatWorkspaceView: View {
 
                     Button(role: .destructive) {
                         attachedFiles.removeAll()
+                        control.log("Attachment", "Cleared attachment list")
                     } label: {
                         Label("Clear", systemImage: "trash")
                     }
@@ -202,6 +330,7 @@ struct MaryChatWorkspaceView: View {
         }
     }
 
+    // MARK: - Composer
     private var composerArea: some View {
         VStack(spacing: 8) {
             TextEditor(text: $userInput)
@@ -220,15 +349,11 @@ struct MaryChatWorkspaceView: View {
                     Label("Attach", systemImage: "paperclip")
                 }
 
-                Button("Clear Chat") {
-                    control.clearChatHistory()
-                    brain.thoughts = "> Chat history cleared."
-                }
-                .buttonStyle(.link)
-
-                Button("Reset Memory") {
-                    control.resetAllMemory()
-                    brain.thoughts = "> Memory reset complete."
+                Button("Clear Active Chat") {
+                    guard let id = control.activeThreadID else { return }
+                    control.deleteThread(id)
+                    control.createNewThread()
+                    brain.thoughts = "> Active chat cleared."
                 }
                 .buttonStyle(.link)
 
@@ -248,6 +373,7 @@ struct MaryChatWorkspaceView: View {
         .padding(.bottom, 8)
     }
 
+    // MARK: - Actions
     private func openFilePicker() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -289,6 +415,7 @@ struct MaryChatWorkspaceView: View {
             control.addUserMessage(trimmed)
             control.log("Task Classified", classified.rawValue)
 
+            // Keep MaryBrain authority
             brain.currentMode = brain.analyzeComplexity(for: trimmed)
             brain.thoughts += "\n> Joe: \(trimmed)"
 
@@ -297,11 +424,25 @@ struct MaryChatWorkspaceView: View {
                 brain.thoughts += "\n> Attachments: \(names)"
             }
 
+            // You can plug the LLM response pipeline here next.
+            // For now this preserves your current behavior cleanly.
             userInput = ""
             isProcessing = false
         }
     }
 
+    private func loadActiveThreadIntoReasoningStream() {
+        guard let thread = control.activeThread else { return }
+
+        let rendered = thread.messages.map { message in
+            let prefix = message.role == "user" ? "Joe" : "Mary"
+            return "> \(prefix): \(message.text)"
+        }.joined(separator: "\n")
+
+        brain.thoughts = rendered.isEmpty ? "> Switched to thread: \(thread.title)" : rendered
+    }
+
+    // MARK: - Footer
     private var statusFooter: some View {
         HStack {
             Group {
