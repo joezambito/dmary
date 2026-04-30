@@ -25,6 +25,8 @@ struct MaryChatWorkspaceView: View {
     @State private var threadToDelete: UUID?
     @State private var showingClearAllConfirm = false
 
+    private let llmService = MaryLocalLLMService()
+
     var body: some View {
         HStack(spacing: 0) {
             threadSidebar
@@ -61,6 +63,9 @@ struct MaryChatWorkspaceView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .onAppear {
+            loadActiveThreadIntoReasoningStream()
+        }
     }
 
     // MARK: - Left Sidebar (Threads)
@@ -73,6 +78,7 @@ struct MaryChatWorkspaceView: View {
                 Button {
                     control.createNewThread()
                     brain.thoughts += "\n> New chat created."
+                    loadActiveThreadIntoReasoningStream()
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -104,6 +110,7 @@ struct MaryChatWorkspaceView: View {
                 Button("Reset Memory") {
                     control.resetAllMemory()
                     brain.thoughts = "> Memory reset complete."
+                    loadActiveThreadIntoReasoningStream()
                 }
                 .buttonStyle(.link)
             }
@@ -285,7 +292,7 @@ struct MaryChatWorkspaceView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
 
-            Text("Plan: classify input → decide tool path → ask permission where required.")
+            Text("Flow: classify input → build context → local LLM call → write response to thread.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
         }
@@ -408,26 +415,57 @@ struct MaryChatWorkspaceView: View {
         guard !trimmed.isEmpty else { return }
         guard !isProcessing else { return }
 
-        Task { @MainActor in
-            isProcessing = true
+        let prompt = trimmed
+        let task = control.classifyTask(for: prompt)
+        let depth = control.selectedDepth
 
-            let classified = control.classifyTask(for: trimmed)
-            control.addUserMessage(trimmed)
-            control.log("Task Classified", classified.rawValue)
+        control.addUserMessage(prompt)
+        control.log("Task Classified", task.rawValue)
 
-            // Keep MaryBrain authority
-            brain.currentMode = brain.analyzeComplexity(for: trimmed)
-            brain.thoughts += "\n> Joe: \(trimmed)"
+        let attachmentContext: String
+        if attachedFiles.isEmpty {
+            attachmentContext = ""
+        } else {
+            let names = attachedFiles.map(\.lastPathComponent).joined(separator: ", ")
+            attachmentContext = "\n\nAttached files:\n- \(names.replacingOccurrences(of: ", ", with: "\n- "))"
+        }
 
-            if !attachedFiles.isEmpty {
-                let names = attachedFiles.map(\.lastPathComponent).joined(separator: ", ")
-                brain.thoughts += "\n> Attachments: \(names)"
+        let systemHint = """
+        You are Mary, Joe's private AI creator and troubleshooting engineer.
+        Task Mode: \(task.rawValue)
+        Response Depth: \(depth.rawValue)
+        Keep answers practical and implementation-first.
+        """
+
+        let finalPrompt = """
+        \(systemHint)
+
+        User request:
+        \(prompt)
+        \(attachmentContext)
+        """
+
+        userInput = ""
+        isProcessing = true
+        brain.currentMode = brain.analyzeComplexity(for: prompt)
+        brain.thoughts += "\n> Joe: \(prompt)"
+        if !attachedFiles.isEmpty {
+            brain.thoughts += "\n> Attachments: \(attachedFiles.map(\.lastPathComponent).joined(separator: ", "))"
+        }
+
+        Task {
+            let response = await llmService.generateResponse(
+                prompt: finalPrompt,
+                maxTokens: depth.maxTokens,
+                temp: 0.15
+            )
+
+            await MainActor.run {
+                control.addMaryMessage(response)
+                control.log("LLM Response", "Received \(response.count) chars")
+                brain.thoughts += "\n> Mary: \(response)"
+                isProcessing = false
             }
-
-            // You can plug the LLM response pipeline here next.
-            // For now this preserves your current behavior cleanly.
-            userInput = ""
-            isProcessing = false
         }
     }
 
