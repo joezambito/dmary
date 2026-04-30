@@ -5,37 +5,52 @@
 //  Created by Joe Zambito on 26/4/2026.
 //
 
+//
+//  MaryLocalLLMService.swift
+//  Mary
+//
+
 import Foundation
 
-/// 🛠️ THE MANAGER (Hardware Controller)
-/// Cleaned of rules. It just ensures the process exists.
+// MARK: - Backend Manager
 actor MaryBackendManager {
     static let shared = MaryBackendManager()
+
     private var process: Process?
+    private let healthURL = URL(string: "http://127.0.0.1:8082/health")!
+    private let startupTimeoutSeconds: Int = 20
 
     func ensureRunning() async -> Bool {
         if await isServerReachable() { return true }
-        
+
         if process?.isRunning != true {
             startBackend()
         }
-        
-        for _ in 0..<10 {
+
+        for _ in 0..<startupTimeoutSeconds {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if await isServerReachable() { return true }
         }
+
         return false
     }
 
     private func isServerReachable() async -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:8082/health") else { return false }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 1
-        let (_, response) = (try? await URLSession.shared.data(for: request)) ?? (Data(), nil)
-        return (response as? HTTPURLResponse)?.statusCode == 200
+        var request = URLRequest(url: healthURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 1.5
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return (200...299).contains(http.statusCode)
+        } catch {
+            return false
+        }
     }
 
     private func startBackend() {
+        // Keep your current local script path
         let scriptPath = "/Users/joezambito/Mary/start_mary_backend.sh"
         guard FileManager.default.fileExists(atPath: scriptPath) else { return }
 
@@ -45,60 +60,110 @@ actor MaryBackendManager {
         task.standardInput = Pipe()
         task.standardOutput = Pipe()
         task.standardError = Pipe()
-        
-        try? task.run()
-        process = task
+
+        do {
+            try task.run()
+            process = task
+        } catch {
+            // Intentionally silent here; caller handles availability check result
+        }
     }
 }
 
-/// 🚀 THE SERVICE (The Hardware Interface)
-/// This file NO LONGER decides the rules. It just sends the data.
+// MARK: - LLM Service
 struct MaryLocalLLMService {
+    private let completionURL = URL(string: "http://127.0.0.1:8082/v1/chat/completions")!
 
-    func generateResponse(prompt: String, maxTokens: Int = 1000, temp: Double = 0.05) async -> String {
-        let backendReady = await MaryBackendManager.shared.ensureRunning()
-        guard backendReady else { return "BACKEND_ERROR: Server Not Reachable" }
+    struct LLMMessage: Codable {
+        let role: String
+        let content: String
+    }
 
-        // FIXED: OpenAI-compatible llama.cpp endpoint
-        guard let url = URL(string: "http://127.0.0.1:8082/v1/chat/completions") else {
-            return "BACKEND_ERROR: Invalid URL."
+    struct ChatCompletionRequest: Codable {
+        let messages: [LLMMessage]
+        let max_tokens: Int
+        let temperature: Double
+        let stop: [String]
+    }
+
+    struct ChatCompletionResponse: Codable {
+        struct Choice: Codable {
+            struct Message: Codable {
+                let role: String?
+                let content: String?
+            }
+            let message: Message?
+        }
+        let choices: [Choice]?
+    }
+
+    /// Basic single-prompt call
+    func generateResponse(
+        prompt: String,
+        maxTokens: Int = 1000,
+        temp: Double = 0.05
+    ) async -> String {
+        let messages = [LLMMessage(role: "user", content: prompt)]
+        return await generateResponse(
+            messages: messages,
+            maxTokens: maxTokens,
+            temp: temp
+        )
+    }
+
+    /// Thread-aware call (pass full message history if you want)
+    func generateResponse(
+        messages: [LLMMessage],
+        maxTokens: Int = 1000,
+        temp: Double = 0.05
+    ) async -> String {
+        let ready = await MaryBackendManager.shared.ensureRunning()
+        guard ready else {
+            return "BACKEND_ERROR: Server not reachable at 127.0.0.1:8082"
         }
 
-        let body: [String: Any] = [
-            "messages": [
-                [
-                    "role": "user",
-                    "content": prompt
-                ]
-            ],
-            "max_tokens": maxTokens,
-            "temperature": temp,
-            "stop": ["<|im_end|>", "```", "Joe:", "Mary:"]
-        ]
+        let body = ChatCompletionRequest(
+            messages: messages,
+            max_tokens: maxTokens,
+            temperature: temp,
+            stop: ["<|im_end|>", "```", "Joe:", "Mary:"]
+        )
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: completionURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 200
+
+        do {
+            request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            return "BACKEND_ERROR: Failed to encode request (\(error.localizedDescription))"
+        }
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 200
+        config.timeoutIntervalForResource = 240
         let session = URLSession(configuration: config)
 
         do {
-            let (data, _) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: request)
 
-            if
-                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let choices = json["choices"] as? [[String: Any]],
-                let first = choices.first,
-                let message = first["message"] as? [String: Any],
-                let content = message["content"] as? String
-            {
-                return content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let http = response as? HTTPURLResponse else {
+                return "BACKEND_ERROR: Invalid HTTP response"
             }
 
-            return "BACKEND_ERROR: Invalid Response"
+            guard (200...299).contains(http.statusCode) else {
+                let bodyText = String(data: data, encoding: .utf8) ?? "No response body"
+                return "BACKEND_ERROR: HTTP \(http.statusCode) - \(bodyText)"
+            }
+
+            let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
+            if let content = decoded.choices?.first?.message?.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !content.isEmpty {
+                return content
+            }
+
+            return "BACKEND_ERROR: Empty model response"
         } catch {
             return "BACKEND_ERROR: \(error.localizedDescription)"
         }
